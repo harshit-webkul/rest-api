@@ -1,0 +1,21 @@
+{
+  "data": {
+    "id": 1,
+    "name": "Example",
+    "email": "admin@example.com",
+    "status": 1,
+    "role": {
+      "id": 1,
+      "name": "Administrator",
+      "description": "This role users will have all the access",
+      "permission_type": "all",
+      "permissions": null,
+      "created_at": null,
+      "updated_at": null
+    },
+    "created_at": "2025-08-06T12:23:24.000000Z",
+    "updated_at": "2025-08-06T14:02:45.000000Z"
+  },
+  "message": "Logged in successfully.",
+  "token": "18|54bBPuOGZtfEtUGGoYtC04Feqlty4sxaNWfeeMq2719aa622"
+}
