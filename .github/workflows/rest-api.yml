@@ -9,7 +9,7 @@ env:
   FORCE_COLOR: 1
 
 jobs:
-  admin_playwright_test:
+  rest_api_playwright_test:
     runs-on: ${{ matrix.operating-systems }}
 
     strategy:
@@ -34,9 +34,11 @@ jobs:
         options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=5
 
     steps:
+      # Step 1: Checkout current repository (for workflow & tests)
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Step 2: Setup PHP
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
@@ -45,22 +47,26 @@ jobs:
           ini-values: error_reporting=E_ALL
           tools: composer:v2
 
+      # Step 3: Setup Node.js
       - name: Set Up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
 
-      - name: Install Node.js Dependencies
-        run: npm install
-        working-directory: vendor/bagisto/rest-api
+      # Step 4: Create Bagisto project (fresh clone)
+      - name: Create Bagisto Project
+        run: composer create-project bagisto/bagisto bagisto-project
 
-      - name: Install Playwright Browsers
+      # Step 5: Go inside Bagisto directory
+      - name: Move into project folder
+        working-directory: bagisto-project
         run: |
-          sudo apt-get update --allow-releaseinfo-change
-          npx playwright install --with-deps chromium
-        working-directory: vendor/bagisto/rest-api
+          echo "Current directory: $(pwd)"
+          ls -la
 
-      - name: Setting Environment
+      # Step 6: Configure .env for MySQL + APP_URL + Sanctum
+      - name: Configure Environment File
+        working-directory: bagisto-project
         run: |
           cp .env.example .env
           sed -i "s|^\(DB_HOST=\s*\).*$|\1127.0.0.1|" .env
@@ -70,45 +76,66 @@ jobs:
           sed -i "s|^\(DB_PASSWORD=\s*\).*$|\1root|" .env
           sed -i "s|^\(APP_DEBUG=\s*\).*$|\1false|" .env
           sed -i "s|^\(APP_URL=\s*\).*$|\1http://127.0.0.1:8000|" .env
-          # Add Sanctum domain for REST API
-          echo "SANCTUM_STATEFUL_DOMAINS=http://127.0.0.1:8000" >> .env
+          echo "SANCTUM_STATEFUL_DOMAINS=http://127.0.0.1:8000/public" >> .env
           cat .env
 
+      # Step 7: Install Composer Dependencies (for Bagisto)
       - name: Install Composer Dependencies
+        working-directory: bagisto-project
         run: composer install
 
-      - name: Running Bagisto Installer
+      # Step 8: Install Bagisto (skip optional stuff)
+      - name: Run Bagisto Installer
+        working-directory: bagisto-project
         run: php artisan bagisto:install --skip-env-check --skip-admin-creation --skip-github-star
 
+      # Step 9: Seed product table
       - name: Seed Product Table
+        working-directory: bagisto-project
         run: php artisan db:seed --class="Webkul\\Installer\\Database\\Seeders\\ProductTableSeeder"
 
-
+      # Step 10: Install Bagisto REST API Package
       - name: Install Bagisto REST API
+        working-directory: bagisto-project
         run: |
           composer require bagisto/rest-api
           php artisan bagisto-rest-api:install
 
+      # Step 11: Setup Playwright dependencies in REST API folder
+      - name: Install Node.js Dependencies
+        working-directory: bagisto-project/vendor/bagisto/rest-api
+        run: npm install
+
+      - name: Install Playwright Browsers
+        working-directory: bagisto-project/vendor/bagisto/rest-api
+        run: |
+          sudo apt-get update --allow-releaseinfo-change
+          npx playwright install --with-deps chromium
+
+      # Step 12: Start Laravel server
       - name: Start Laravel server
+        working-directory: bagisto-project
         run: |
           php artisan serve --host=0.0.0.0 --port=8000 > server.log 2>&1 &
-          echo "Waiting for server to start..."
-          timeout 30 bash -c 'until curl -s http://127.0.0.1:8000 > /dev/null; do sleep 1; done'
+          echo "Waiting for Laravel server to start..."
+          timeout 40 bash -c 'until curl -s http://127.0.0.1:8000 > /dev/null; do sleep 1; done'
+          echo "Laravel started successfully!"
 
+      # Step 13: Run Playwright Tests (all)
       - name: Run All Playwright Tests
+        working-directory: bagisto-project/vendor/bagisto/rest-api
         env:
           BASE_URL: 'http://127.0.0.1:8000'
         run: |
-          npx playwright test --config=tests/e2e-pw/playwright.config.ts --shard=${{ matrix.shard-index }}/${{ matrix.shard-total }}
-        working-directory: vendor/bagisto/rest-api
+          npx playwright test --config=tests/api-pw/playwright.config.ts --shard=${{ matrix.shard-index }}/${{ matrix.shard-total }}
 
+      # Step 14: Upload Playwright Results
       - name: Upload Test Results
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: test-results-${{ matrix.shard-index }}-${{ github.run_id }}-${{ github.run_number }}
           path: |
-            vendor/bagisto/rest-api/tests/api-pw/playwright-report
-            vendor/bagisto/rest-api/tests/api-pw/test-results
-            
-          retention-days: 1
+            bagisto-project/vendor/bagisto/rest-api/tests/api-pw/playwright-report
+            bagisto-project/vendor/bagisto/rest-api/tests/api-pw/test-results
+          retention-days: 2
