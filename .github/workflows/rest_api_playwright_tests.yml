@@ -107,7 +107,7 @@ jobs:
       # Step 10: Install Node.js dependencies (Playwright)
       - name: Install Node.js Dependencies
         working-directory: bagisto-project/vendor/bagisto/rest-api
-        run: npm ci
+        run: npm install
 
       - name: Install Playwright Browsers
         working-directory: bagisto-project/vendor/bagisto/rest-api
