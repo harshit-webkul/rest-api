@@ -7,6 +7,12 @@ permissions:
 
 env:
   FORCE_COLOR: 1
+  APP_URL: http://127.0.0.1:8000
+  DB_HOST: 127.0.0.1
+  DB_PORT: 3306
+  DB_DATABASE: bagisto
+  DB_USERNAME: root
+  DB_PASSWORD: root
 
 jobs:
   rest_api_playwright_test:
@@ -18,10 +24,10 @@ jobs:
         operating-systems: [ubuntu-latest]
         php-versions: ['8.3']
         node-version: ['22.13.1']
-        shard-index: [1,2,3,4,5,6]
+        shard-index: [1, 2, 3, 4, 5, 6]
         shard-total: [6]
 
-    name: Rest-API | Playwright Tests | Shard ${{ matrix.shard-index }} Of ${{ matrix.shard-total }}
+    name: Rest-API | Playwright Tests | Shard ${{ matrix.shard-index }} of ${{ matrix.shard-total }}
 
     services:
       mysql:
@@ -30,12 +36,16 @@ jobs:
           MYSQL_ROOT_PASSWORD: root
           MYSQL_DATABASE: bagisto
         ports:
-          - 3306
-        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=5
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
 
     steps:
       # Step 1: Checkout current repository (for workflow & tests)
-      - name: Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
       # Step 2: Setup PHP
@@ -48,93 +58,91 @@ jobs:
           tools: composer:v2
 
       # Step 3: Setup Node.js
-      - name: Set Up Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
 
-      # Step 4: Create Bagisto project (fresh clone)
+      # Step 4: Create Bagisto project (fresh)
       - name: Create Bagisto Project
         run: composer create-project bagisto/bagisto bagisto-project
 
-      # Step 5: Go inside Bagisto directory
-      - name: Move into project folder
-        working-directory: bagisto-project
-        run: |
-          echo "Current directory: $(pwd)"
-          ls -la
-
-      # Step 6: Configure .env for MySQL + APP_URL + Sanctum
+      # Step 5: Configure Environment (.env)
       - name: Configure Environment File
         working-directory: bagisto-project
         run: |
           cp .env.example .env
-          sed -i "s|^\(DB_HOST=\s*\).*$|\1127.0.0.1|" .env
-          sed -i "s|^\(DB_PORT=\s*\).*$|\1${{ job.services.mysql.ports['3306'] }}|" .env
-          sed -i "s|^\(DB_DATABASE=\s*\).*$|\1bagisto|" .env
-          sed -i "s|^\(DB_USERNAME=\s*\).*$|\1root|" .env
-          sed -i "s|^\(DB_PASSWORD=\s*\).*$|\1root|" .env
-          sed -i "s|^\(APP_DEBUG=\s*\).*$|\1false|" .env
-          sed -i "s|^\(APP_URL=\s*\).*$|\1http://127.0.0.1:8000|" .env
-          echo "SANCTUM_STATEFUL_DOMAINS=http://127.0.0.1:8000/public" >> .env
+          php artisan key:generate
+          sed -i "s|^DB_HOST=.*|DB_HOST=${DB_HOST}|" .env
+          sed -i "s|^DB_PORT=.*|DB_PORT=${DB_PORT}|" .env
+          sed -i "s|^DB_DATABASE=.*|DB_DATABASE=${DB_DATABASE}|" .env
+          sed -i "s|^DB_USERNAME=.*|DB_USERNAME=${DB_USERNAME}|" .env
+          sed -i "s|^DB_PASSWORD=.*|DB_PASSWORD=${DB_PASSWORD}|" .env
+          sed -i "s|^APP_URL=.*|APP_URL=${APP_URL}|" .env
+          echo "SANCTUM_STATEFUL_DOMAINS=${APP_URL}/public" >> .env
           cat .env
 
-      # Step 7: Install Composer Dependencies (for Bagisto)
+      # Step 6: Install Composer Dependencies
       - name: Install Composer Dependencies
         working-directory: bagisto-project
-        run: composer install
+        run: composer install -q --no-ansi --no-interaction --no-scripts --no-progress --prefer-dist
 
-      # Step 8: Install Bagisto (skip optional stuff)
+      # Step 7: Run Bagisto Installer
       - name: Run Bagisto Installer
         working-directory: bagisto-project
         run: php artisan bagisto:install --skip-env-check --skip-admin-creation --skip-github-star
 
-      # Step 9: Seed product table
+      # Step 8: Seed product table
       - name: Seed Product Table
         working-directory: bagisto-project
         run: php artisan db:seed --class="Webkul\\Installer\\Database\\Seeders\\ProductTableSeeder"
 
-      # Step 10: Install Bagisto REST API Package
+      # Step 9: Install REST API package
       - name: Install Bagisto REST API
         working-directory: bagisto-project
         run: |
           composer require bagisto/rest-api
           php artisan bagisto-rest-api:install
 
-      # Step 11: Setup Playwright dependencies in REST API folder
+      # Step 10: Install Node.js dependencies (Playwright)
       - name: Install Node.js Dependencies
         working-directory: bagisto-project/vendor/bagisto/rest-api
-        run: npm install
+        run: npm ci
 
       - name: Install Playwright Browsers
         working-directory: bagisto-project/vendor/bagisto/rest-api
         run: |
-          sudo apt-get update --allow-releaseinfo-change
+          sudo apt-get update
           npx playwright install --with-deps chromium
 
-      # Step 12: Start Laravel server
-      - name: Start Laravel server
+      # Step 11: Start Laravel server in background
+      - name: Start Laravel Server
         working-directory: bagisto-project
         run: |
-          php artisan serve --host=0.0.0.0 --port=8000 > server.log 2>&1 &
-          echo "Waiting for Laravel server to start..."
-          timeout 40 bash -c 'until curl -s http://127.0.0.1:8000 > /dev/null; do sleep 1; done'
-          echo "Laravel started successfully!"
+          nohup php artisan serve --host=127.0.0.1 --port=8000 > server.log 2>&1 &
+          echo "Waiting for Laravel to start..."
+          for i in {1..40}; do
+            if curl -s http://127.0.0.1:8000 > /dev/null; then
+              echo "Laravel is up!"
+              break
+            fi
+            sleep 1
+          done
 
-      # Step 13: Run Playwright Tests (all)
-      - name: Run All Playwright Tests
+      # Step 12: Run Playwright Tests
+      - name: Run Playwright Tests
         working-directory: bagisto-project/vendor/bagisto/rest-api
         env:
-          BASE_URL: 'http://127.0.0.1:8000'
+          BASE_URL: ${{ env.APP_URL }}
         run: |
           npx playwright test --config=tests/e2e-pw/playwright.config.ts --shard=${{ matrix.shard-index }}/${{ matrix.shard-total }}
 
-      # Step 14: Upload Playwright Results
-      - name: Upload Test Results
+      # Step 13: Upload Playwright Reports
+      - name: Upload Playwright Test Reports
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: test-results-${{ matrix.shard-index }}-${{ github.run_id }}-${{ github.run_number }}
+          name: playwright-results-${{ matrix.shard-index }}
           path: |
             bagisto-project/vendor/bagisto/rest-api/tests/e2e-pw/playwright-report
             bagisto-project/vendor/bagisto/rest-api/tests/e2e-pw/test-results
